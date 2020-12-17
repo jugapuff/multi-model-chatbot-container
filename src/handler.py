@@ -51,3 +51,119 @@ generator_tokenizer.add_special_tokens({"additional_special_tokens": ["<chatbot>
 generator_model.resize_token_embeddings(len(generator_tokenizer))
 generator_model = generator_model.to("cpu")
 generator_model.eval()
+
+with open("./src/models/label_dic", 'rb') as f:
+    temp_dic = pickle.load(f) 
+labels = sorted(temp_dic.keys())
+class Handler:
+    def __init__(self):
+
+        pass
+
+    def __call__(self, req):
+        data = json.loads(req.input)
+        query = data["query"]
+        query = query[-40:]
+        history = data["history"].split(">><<")
+        if history == ['']:
+            history = []
+        candidates = data["candidates"].split(">><<")
+        if len(data["candidates"])<2:
+            candidates = []
+
+        updated_history = []
+        updated_candidates = []
+        history.append(query)
+        batch = classifier_tokenizer(query,
+                                    add_special_tokens=True, 
+                                    truncation = True,
+                                    return_token_type_ids=True, 
+                                    padding= True, 
+                                    max_length=64,return_tensors="pt").to("cpu")
+        
+        classified = classifier_model(**batch)[0]
+        classified = torch.topk(classified, k=1, dim=-1)
+
+
+        if classified.values[0,0].item() > 5.6:
+            final_res = random.choice(temp_dic[labels[classified.indices[0,0].item()]])
+
+            if final_res not in history:
+                
+                updated_history = history + [final_res]
+                updated_candidates = random.choices(candidates, k=int(len(candidates) * 0.7))
+                sleep(0.3)
+                return json.dumps({"updated_history":updated_history, "final_res":final_res, "updated_candidates":updated_candidates })
+
+        tokenized_query_for_generator = generator_tokenizer(query+"<chatbot>",max_length=10,truncation=True, 
+                                                            add_special_tokens=False, 
+                                                            return_tensors='pt').to("cpu")
+        before_gen_beam2 = time()
+        gen_beam2 = generator_model.generate(tokenized_query_for_generator["input_ids"], 
+                                max_length=23,
+                                num_beams=2, 
+                                repetition_penalty=1.7, 
+                                temperature=1.6, 
+                                top_p=0.9, 
+                                do_sample=True, 
+                                num_return_sequences=4, 
+                                eos_token_id=1,
+                                length_penalty=1.9,
+                                pad_token_id=1)
+        gen_beam4 = generator_model.generate(tokenized_query_for_generator["input_ids"],
+                               max_length=23,
+                               num_beams=3, 
+                               repetition_penalty=1.7, 
+                               temperature=1.5, 
+                               top_p=0.96, 
+                               do_sample=True, 
+                               num_return_sequences=2, 
+                               eos_token_id=1,
+                               length_penalty=1.9,
+                               pad_token_id=1)
+
+
+        gen_responses = []
+
+        for response in gen_beam2.tolist() + gen_beam4.tolist():
+            if len(response) <= 23:
+                text = generator_tokenizer.decode(response)
+                limit = text.find("</s>", 1)
+                text = text[: limit if limit != -1 else None]
+                if "<chatbot>" in text:
+                    gen_responses.append(text.split("<chatbot>")[1].replace("<unk>",""))
+
+        gen_responses = list(set(gen_responses))
+
+        history = history[-15:]
+
+
+        total_responses = []
+        candidates = data["candidates"].split(">><<")
+        if len(data["candidates"])<2:
+            total_responses = gen_responses
+            if gen_responses == []:
+                total_responses = ["무슨 말씀인지 알아 듣게 이야기해주세요."]
+        else:
+            total_responses = gen_responses + candidates
+        before_rerank = time()
+        
+        
+        tokenized_context_with_response_for_reranker = reranker_tokenizer(
+            [("[/]".join(history[-5:]), r) for r in total_responses],
+            add_special_tokens=True, 
+            return_token_type_ids=True, 
+            padding= True,
+            truncation=True,
+            return_tensors="pt"
+        ).to("cpu")
+
+        scores = reranker_model(**tokenized_context_with_response_for_reranker)
+        scores = F.softmax(scores[0], dim=-1)[:,1]
+
+
+        final_res = total_responses.pop(torch.argmax(scores).item())
+
+        updated_candidates = list(set(total_responses) - set(random.choices(gen_responses, k=len(gen_responses)-4)))
+        updated_history = history + [final_res]
+        return json.dumps({"updated_history":updated_history, "final_res":final_res, "updated_candidates":updated_candidates })
