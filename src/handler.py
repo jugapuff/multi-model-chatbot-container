@@ -1,4 +1,3 @@
-
 from transformers import BertForSequenceClassification, GPT2LMHeadModel, AutoTokenizer
 from kogpt2_transformers import get_kogpt2_tokenizer
 import torch.nn.functional as F
@@ -10,6 +9,23 @@ import re
 import pickle
 from time import sleep
 import json
+
+EMOJI = re.compile("["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        u"\U0001f926-\U0001f937"
+        u"\U00010000-\U0010ffff"
+        u"\u2640-\u2642" 
+        u"\u2600-\u2B55"
+        u"\u200d"
+        u"\u23cf"
+        u"\u23e9"
+        u"\u231a"
+        u"\ufe0f"  # dingbats
+        u"\u3030"
+                              "]+", re.UNICODE)
 
 # Load Reranker model & tokenizer
 print("Load Reranker model & tokenizer")
